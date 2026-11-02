@@ -1,4 +1,3 @@
-
 import {
   SwissEphemeris,
   Planet,
@@ -85,6 +84,7 @@ input {
 <div class="number" id="houseNumber"></div>
 <strong id="houseName"></strong>
 <p id="resultText"></p>
+<div id="transitPeriod" style="display:none; margin-top:18px; padding-top:16px; border-top:1px solid #e5ddd3; line-height:1.6;"></div>
 </div>
 
 <p class="note">
@@ -234,8 +234,72 @@ function findHouse(longitude, cusps) {
   throw new Error("Не удалось определить дом Юпитера.");
 }
 
+function getJupiterHouseAt(timestamp, cusps) {
+  const jd = sweInstance.dateToJulianDay(new Date(timestamp));
+  const position = sweInstance.calculatePosition(jd, Planet.Jupiter);
+  return findHouse(position.longitude, cusps);
+}
+
+function formatLocalDate(timestamp, timezone) {
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone: timezone,
+    day: "numeric",
+    month: "long",
+    year: "numeric"
+  }).format(new Date(timestamp));
+}
+
+// Ищем ближайшее пересечение куспида. Полудневный шаг позволяет
+// заметить даже короткий заход в соседний дом около разворота Юпитера.
+function findNextHouseChanges(startDate, cusps, timezone) {
+  const step = 12 * 60 * 60 * 1000;
+  const horizon = 4 * 365.25 * 24 * 60 * 60 * 1000;
+  const end = startDate.getTime() + horizon;
+  const changes = [];
+
+  let leftTime = startDate.getTime();
+  let leftHouse = getJupiterHouseAt(leftTime, cusps);
+
+  for (let rightTime = leftTime + step; rightTime <= end; rightTime += step) {
+    const rightHouse = getJupiterHouseAt(rightTime, cusps);
+
+    if (rightHouse !== leftHouse) {
+      let low = leftTime;
+      let high = rightTime;
+      const oldHouse = leftHouse;
+
+      while (high - low > 60 * 60 * 1000) {
+        const middle = Math.floor((low + high) / 2);
+        if (getJupiterHouseAt(middle, cusps) === oldHouse) {
+          low = middle;
+        } else {
+          high = middle;
+        }
+      }
+
+      const newHouse = getJupiterHouseAt(high, cusps);
+      changes.push({
+        from: oldHouse,
+        to: newHouse,
+        timestamp: high
+      });
+
+      // Продолжаем от точки сразу после найденного пересечения.
+      leftTime = high + 60 * 60 * 1000;
+      leftHouse = getJupiterHouseAt(leftTime, cusps);
+      rightTime = leftTime;
+    } else {
+      leftTime = rightTime;
+      leftHouse = rightHouse;
+    }
+  }
+
+  return changes;
+}
+
 $("calculate").onclick = async () => {
   $("result").style.display = "none";
+  $("transitPeriod").style.display = "none";
   $("status").textContent = "Выполняется расчёт...";
 
   try {
@@ -308,6 +372,31 @@ $("calculate").onclick = async () => {
 
     $("resultText").textContent =
       descriptions[house - 1];
+
+    if (mode === "transit") {
+      $("transitPeriod").style.display = "block";
+      $("transitPeriod").textContent = "Ищем дату следующего перехода Юпитера в другой дом...";
+      const changes = findNextHouseChanges(
+        transitUTC,
+        houses.cusps,
+        selectedCity.timezone
+      );
+
+      if (changes.length) {
+        const next = changes[0];
+        const timeline = changes.slice(0, 4).map(change =>
+          `С ${formatLocalDate(change.timestamp, selectedCity.timezone)} — переход из ${change.from} в ${change.to} дом.`
+        );
+        $("transitPeriod").innerHTML =
+          `<strong>По ${house} дому:</strong> ориентировочно до ${formatLocalDate(next.timestamp, selectedCity.timezone)}.<br>` +
+          `<strong>Ближайшие переходы Юпитера:</strong><br>` +
+          timeline.join("<br>") +
+          `<br><span style="color:#887d70;font-size:13px;">Даты рассчитаны по пересечению куспидов натальных домов; при ретроградности возможен возврат в предыдущий дом.</span>`;
+      } else {
+        $("transitPeriod").textContent =
+          "В ближайшие четыре года перехода в другой дом не ожидается.";
+      }
+    }
 
     $("result").style.display = "block";
     $("status").textContent = "";
